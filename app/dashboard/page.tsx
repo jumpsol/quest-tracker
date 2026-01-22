@@ -45,6 +45,7 @@ interface Quest {
   savings_wallet: string | null;
   source_wallet: string | null;
   min_amount: number | null;
+  token_type: 'SOL' | 'USDC' | 'BOTH' | null;
 }
 
 interface QuestCompletion {
@@ -73,7 +74,7 @@ export default function DashboardPage() {
   const router = useRouter();
 
   const [newQuest, setNewQuest] = useState({ title: '', description: '', icon: 'custom', category: 'social', custom_logo: null as string | null });
-  const [savingsQuest, setSavingsQuest] = useState({ title: 'Daily Savings', description: 'Transfer to savings', savings_wallet: '', source_wallet: '', min_amount: 0.01 });
+  const [savingsQuest, setSavingsQuest] = useState({ title: 'Daily Savings', description: 'Transfer to savings', savings_wallet: '', source_wallet: '', min_amount: 0.01, token_type: 'SOL' as 'SOL' | 'USDC' | 'BOTH' });
   const [newTx, setNewTx] = useState({ date: new Date().toISOString().split('T')[0], amount: '', description: '', type: 'income', category: '' });
 
   const txCategories = {
@@ -162,7 +163,12 @@ export default function DashboardPage() {
       const res = await fetch('/api/check-wallet', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ savingsWallet: quest.savings_wallet, sourceWallet: quest.source_wallet, minAmount: quest.min_amount })
+        body: JSON.stringify({ 
+          savingsWallet: quest.savings_wallet, 
+          sourceWallet: quest.source_wallet, 
+          minAmount: quest.min_amount,
+          tokenType: quest.token_type || 'SOL'
+        })
       });
       const result = await res.json();
       setWalletResults(p => ({ ...p, [quest.id]: result }));
@@ -194,10 +200,11 @@ export default function DashboardPage() {
     const { data } = await supabase.from('quests').insert({
       user_id: user.id, title: savingsQuest.title, description: savingsQuest.description,
       icon: 'savings', category: 'savings', is_savings_quest: true,
-      savings_wallet: savingsQuest.savings_wallet, source_wallet: savingsQuest.source_wallet || null, min_amount: savingsQuest.min_amount
+      savings_wallet: savingsQuest.savings_wallet, source_wallet: savingsQuest.source_wallet || null, 
+      min_amount: savingsQuest.min_amount, token_type: savingsQuest.token_type
     }).select().single();
     if (data) setQuests([...quests, data]);
-    setSavingsQuest({ title: 'Daily Savings', description: 'Transfer to savings', savings_wallet: '', source_wallet: '', min_amount: 0.01 });
+    setSavingsQuest({ title: 'Daily Savings', description: 'Transfer to savings', savings_wallet: '', source_wallet: '', min_amount: 0.01, token_type: 'SOL' });
     setShowSavingsModal(false);
   };
 
@@ -329,13 +336,30 @@ export default function DashboardPage() {
                       <div>
                         <div className="flex items-center gap-2 mb-1">
                           <p className={`font-semibold ${done ? 'text-emerald-500' : ''}`}>{q.title}</p>
+                          {q.is_savings_quest && (
+                            <span className="px-2 py-0.5 rounded text-xs" style={{
+                              background: q.token_type === 'USDC' ? '#2775CA22' : q.token_type === 'BOTH' ? '#10b98122' : '#9945FF22',
+                              color: q.token_type === 'USDC' ? '#2775CA' : q.token_type === 'BOTH' ? '#10b981' : '#9945FF'
+                            }}>
+                              {q.token_type === 'USDC' ? '$ USDC' : q.token_type === 'BOTH' ? '◎ + $' : '◎ SOL'}
+                            </span>
+                          )}
                           {q.is_savings_quest && <span className="px-2 py-0.5 rounded bg-blue-500/20 text-blue-400 text-xs">Auto</span>}
                           {streak >= 3 && <span className="px-2 py-0.5 rounded bg-amber-500/15 text-amber-500 text-xs flex items-center gap-1"><Flame size={12} />{streak}d</span>}
                         </div>
                         <p className="text-sm text-gray-500">{q.description}</p>
                         {q.is_savings_quest && result?.todayStats && (
                           <div className="mt-2 text-xs text-gray-500">
-                            Today: <span className="text-emerald-400">{result.todayStats.totalSOL} SOL</span>
+                            Today: 
+                            {(q.token_type === 'SOL' || q.token_type === 'BOTH' || !q.token_type) && parseFloat(result.todayStats.totalSOL) > 0 && (
+                              <span className="text-purple-400 ml-1">{result.todayStats.totalSOL} SOL</span>
+                            )}
+                            {(q.token_type === 'USDC' || q.token_type === 'BOTH') && parseFloat(result.todayStats.totalUSDC) > 0 && (
+                              <span className="text-blue-400 ml-1">${result.todayStats.totalUSDC} USDC</span>
+                            )}
+                            {parseFloat(result.todayStats.totalSOL) === 0 && parseFloat(result.todayStats.totalUSDC) === 0 && (
+                              <span className="ml-1">No transfers yet</span>
+                            )}
                             {result.transactions?.[0] && <a href={`https://solscan.io/tx/${result.transactions[0].signature}`} target="_blank" className="ml-3 text-blue-400">View TX <ExternalLink size={10} className="inline" /></a>}
                           </div>
                         )}
@@ -598,13 +622,34 @@ export default function DashboardPage() {
             <div className="bg-blue-500/10 border border-blue-500/20 rounded-xl p-4 mb-6">
               <div className="flex items-start gap-3">
                 <Zap size={20} className="text-blue-400" />
-                <div><p className="text-sm font-medium text-blue-400">Auto-verification</p><p className="text-xs text-gray-400 mt-1">Verifies automatically when you transfer SOL</p></div>
+                <div><p className="text-sm font-medium text-blue-400">Auto-verification</p><p className="text-xs text-gray-400 mt-1">Verifies automatically when you transfer tokens</p></div>
               </div>
             </div>
             <div className="space-y-5">
               <div>
                 <label className="text-sm text-gray-400 mb-2 block">Title</label>
                 <input value={savingsQuest.title} onChange={e => setSavingsQuest(p => ({...p, title: e.target.value}))} className="w-full px-4 py-3 bg-black/30 border border-white/10 rounded-xl text-white" />
+              </div>
+              <div>
+                <label className="text-sm text-gray-400 mb-2 block">Token Type</label>
+                <div className="flex gap-2">
+                  {[
+                    { id: 'SOL', label: '◎ SOL', color: '#9945FF' },
+                    { id: 'USDC', label: '$ USDC', color: '#2775CA' },
+                    { id: 'BOTH', label: '◎ + $ Both', color: '#10b981' }
+                  ].map(t => (
+                    <button 
+                      key={t.id} 
+                      onClick={() => setSavingsQuest(p => ({...p, token_type: t.id as any}))}
+                      className="flex-1 py-3 rounded-xl font-semibold border-2 transition-all"
+                      style={savingsQuest.token_type === t.id 
+                        ? { borderColor: t.color, color: t.color, background: `${t.color}22` } 
+                        : { borderColor: 'rgba(255,255,255,0.1)', color: '#6b7280' }}
+                    >
+                      {t.label}
+                    </button>
+                  ))}
+                </div>
               </div>
               <div>
                 <label className="text-sm text-gray-400 mb-2 block">Savings Wallet *</label>
@@ -615,7 +660,9 @@ export default function DashboardPage() {
                 <input value={savingsQuest.source_wallet} onChange={e => setSavingsQuest(p => ({...p, source_wallet: e.target.value}))} className="w-full px-4 py-3 bg-black/30 border border-white/10 rounded-xl text-white font-mono text-sm" placeholder="Your main wallet" />
               </div>
               <div>
-                <label className="text-sm text-gray-400 mb-2 block">Min Amount (SOL)</label>
+                <label className="text-sm text-gray-400 mb-2 block">
+                  Min Amount ({savingsQuest.token_type === 'USDC' ? 'USDC' : savingsQuest.token_type === 'BOTH' ? 'SOL or USDC' : 'SOL'})
+                </label>
                 <input type="number" step="0.001" value={savingsQuest.min_amount} onChange={e => setSavingsQuest(p => ({...p, min_amount: parseFloat(e.target.value) || 0}))} className="w-full px-4 py-3 bg-black/30 border border-white/10 rounded-xl text-white" />
               </div>
               <button onClick={addSavingsQuest} disabled={!savingsQuest.savings_wallet} className="w-full py-4 bg-gradient-to-r from-emerald-500 to-emerald-600 rounded-xl text-white font-semibold disabled:opacity-50">Add Savings Quest</button>

@@ -4,7 +4,7 @@ const HELIUS_API_KEY = process.env.HELIUS_API_KEY;
 
 export async function POST(request: NextRequest) {
   try {
-    const { savingsWallet, sourceWallet, minAmount } = await request.json();
+    const { savingsWallet, sourceWallet, minAmount, tokenType = 'SOL' } = await request.json();
 
     if (!savingsWallet) {
       return NextResponse.json({ error: 'Savings wallet address required' }, { status: 400 });
@@ -26,74 +26,80 @@ export async function POST(request: NextRequest) {
 
     const transactions = await response.json();
 
-    // Filter today's incoming transfers
-    const todayTransfers = transactions.filter((tx: any) => {
-      const txTimestamp = tx.timestamp;
-      if (txTimestamp < todayTimestamp) return false;
-
-      // Check for native SOL transfers
-      const nativeTransfers = tx.nativeTransfers || [];
-      const hasIncomingSOL = nativeTransfers.some((transfer: any) => {
-        const isToSavings = transfer.toUserAccount === savingsWallet;
-        const isFromSource = sourceWallet ? transfer.fromUserAccount === sourceWallet : true;
-        const meetsMinAmount = minAmount ? (transfer.amount / 1e9) >= minAmount : true;
-        return isToSavings && isFromSource && meetsMinAmount;
-      });
-
-      // Check for token transfers (SPL tokens)
-      const tokenTransfers = tx.tokenTransfers || [];
-      const hasIncomingToken = tokenTransfers.some((transfer: any) => {
-        const isToSavings = transfer.toUserAccount === savingsWallet;
-        const isFromSource = sourceWallet ? transfer.fromUserAccount === sourceWallet : true;
-        return isToSavings && isFromSource;
-      });
-
-      return hasIncomingSOL || hasIncomingToken;
-    });
-
     // Calculate total amount transferred today
     let totalSOL = 0;
     let totalUSDC = 0;
     const txDetails: any[] = [];
 
-    todayTransfers.forEach((tx: any) => {
-      const nativeTransfers = tx.nativeTransfers || [];
-      nativeTransfers.forEach((transfer: any) => {
-        if (transfer.toUserAccount === savingsWallet) {
-          const amount = transfer.amount / 1e9;
-          totalSOL += amount;
-          txDetails.push({
-            signature: tx.signature,
-            type: 'SOL',
-            amount: amount,
-            from: transfer.fromUserAccount,
-            timestamp: tx.timestamp,
-            description: tx.description || 'SOL Transfer'
-          });
-        }
-      });
+    // Filter today's incoming transfers
+    const todayTransfers = transactions.filter((tx: any) => {
+      const txTimestamp = tx.timestamp;
+      if (txTimestamp < todayTimestamp) return false;
 
-      const tokenTransfers = tx.tokenTransfers || [];
-      tokenTransfers.forEach((transfer: any) => {
-        if (transfer.toUserAccount === savingsWallet) {
-          if (transfer.mint === 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v') {
-            const amount = transfer.tokenAmount;
-            totalUSDC += amount;
-            txDetails.push({
-              signature: tx.signature,
-              type: 'USDC',
-              amount: amount,
-              from: transfer.fromUserAccount,
-              timestamp: tx.timestamp,
-              description: 'USDC Transfer'
-            });
+      let hasValidTransfer = false;
+
+      // Check for native SOL transfers
+      if (tokenType === 'SOL' || tokenType === 'BOTH') {
+        const nativeTransfers = tx.nativeTransfers || [];
+        nativeTransfers.forEach((transfer: any) => {
+          if (transfer.toUserAccount === savingsWallet) {
+            const isFromSource = sourceWallet ? transfer.fromUserAccount === sourceWallet : true;
+            if (isFromSource) {
+              const amount = transfer.amount / 1e9;
+              totalSOL += amount;
+              txDetails.push({
+                signature: tx.signature,
+                type: 'SOL',
+                amount: amount,
+                from: transfer.fromUserAccount,
+                timestamp: tx.timestamp,
+                description: tx.description || 'SOL Transfer'
+              });
+              hasValidTransfer = true;
+            }
           }
-        }
-      });
+        });
+      }
+
+      // Check for USDC transfers
+      if (tokenType === 'USDC' || tokenType === 'BOTH') {
+        const tokenTransfers = tx.tokenTransfers || [];
+        tokenTransfers.forEach((transfer: any) => {
+          if (transfer.toUserAccount === savingsWallet) {
+            // USDC mint address on Solana
+            if (transfer.mint === 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v') {
+              const isFromSource = sourceWallet ? transfer.fromUserAccount === sourceWallet : true;
+              if (isFromSource) {
+                const amount = transfer.tokenAmount;
+                totalUSDC += amount;
+                txDetails.push({
+                  signature: tx.signature,
+                  type: 'USDC',
+                  amount: amount,
+                  from: transfer.fromUserAccount,
+                  timestamp: tx.timestamp,
+                  description: 'USDC Transfer'
+                });
+                hasValidTransfer = true;
+              }
+            }
+          }
+        });
+      }
+
+      return hasValidTransfer;
     });
 
-    const isCompleted = todayTransfers.length > 0 && 
-      (minAmount ? totalSOL >= minAmount : true);
+    // Determine if quest is completed based on token type
+    let isCompleted = false;
+    if (tokenType === 'SOL') {
+      isCompleted = totalSOL >= (minAmount || 0);
+    } else if (tokenType === 'USDC') {
+      isCompleted = totalUSDC >= (minAmount || 0);
+    } else if (tokenType === 'BOTH') {
+      // Either SOL or USDC meets the minimum
+      isCompleted = totalSOL >= (minAmount || 0) || totalUSDC >= (minAmount || 0);
+    }
 
     return NextResponse.json({
       success: true,
