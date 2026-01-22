@@ -74,7 +74,7 @@ export default function DashboardPage() {
   const router = useRouter();
 
   const [newQuest, setNewQuest] = useState({ title: '', description: '', icon: 'custom', category: 'social', custom_logo: null as string | null });
-  const [savingsQuest, setSavingsQuest] = useState({ title: 'Daily Savings', description: 'Transfer to savings', savings_wallet: '', source_wallet: '', min_amount: 0.01, token_type: 'SOL' as 'SOL' | 'USDC' | 'BOTH' });
+  const [savingsQuest, setSavingsQuest] = useState({ title: 'Daily Savings', description: 'Transfer to savings', savings_wallet: '', source_wallet: '', min_amount: 0.01, token_type: 'SOL' as 'SOL' | 'USDC' | 'BOTH', custom_logo: null as string | null });
   const [newTx, setNewTx] = useState({ date: new Date().toISOString().split('T')[0], amount: '', description: '', type: 'income', category: '' });
 
   const txCategories = {
@@ -201,10 +201,11 @@ export default function DashboardPage() {
       user_id: user.id, title: savingsQuest.title, description: savingsQuest.description,
       icon: 'savings', category: 'savings', is_savings_quest: true,
       savings_wallet: savingsQuest.savings_wallet, source_wallet: savingsQuest.source_wallet || null, 
-      min_amount: savingsQuest.min_amount, token_type: savingsQuest.token_type
+      min_amount: savingsQuest.min_amount, token_type: savingsQuest.token_type,
+      custom_logo: savingsQuest.custom_logo
     }).select().single();
     if (data) setQuests([...quests, data]);
-    setSavingsQuest({ title: 'Daily Savings', description: 'Transfer to savings', savings_wallet: '', source_wallet: '', min_amount: 0.01, token_type: 'SOL' });
+    setSavingsQuest({ title: 'Daily Savings', description: 'Transfer to savings', savings_wallet: '', source_wallet: '', min_amount: 0.01, token_type: 'SOL', custom_logo: null });
     setShowSavingsModal(false);
   };
 
@@ -611,7 +612,7 @@ export default function DashboardPage() {
       {/* Savings Modal */}
       {showSavingsModal && (
         <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50">
-          <div className="bg-gradient-to-br from-gray-800 to-gray-900 rounded-3xl p-8 w-full max-w-lg border border-white/10">
+          <div className="bg-gradient-to-br from-gray-800 to-gray-900 rounded-3xl p-8 w-full max-w-lg border border-white/10 max-h-[90vh] overflow-y-auto">
             <div className="flex justify-between items-center mb-6">
               <div className="flex items-center gap-3">
                 <div className="w-10 h-10 rounded-xl bg-emerald-500/20 flex items-center justify-center"><Wallet size={20} className="text-emerald-500" /></div>
@@ -626,6 +627,41 @@ export default function DashboardPage() {
               </div>
             </div>
             <div className="space-y-5">
+              {/* Logo Upload */}
+              <div>
+                <label className="text-sm text-gray-400 mb-2 block">Quest Logo (optional)</label>
+                <div className="flex items-center gap-4">
+                  <div className="w-16 h-16 rounded-2xl bg-black/30 border-2 border-dashed border-white/15 flex items-center justify-center overflow-hidden">
+                    {savingsQuest.custom_logo ? (
+                      <img src={savingsQuest.custom_logo} className="w-full h-full object-cover" />
+                    ) : (
+                      <Wallet size={24} className="text-gray-600" />
+                    )}
+                  </div>
+                  <div>
+                    <input 
+                      type="file" 
+                      accept="image/*" 
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        if (file) {
+                          const reader = new FileReader();
+                          reader.onloadend = () => setSavingsQuest(p => ({...p, custom_logo: reader.result as string}));
+                          reader.readAsDataURL(file);
+                        }
+                      }} 
+                      className="hidden" 
+                      id="savings-logo" 
+                    />
+                    <label htmlFor="savings-logo" className="px-4 py-2 rounded-xl bg-indigo-500 text-white text-sm font-semibold cursor-pointer inline-flex items-center gap-2">
+                      <Upload size={16} />Upload
+                    </label>
+                    {savingsQuest.custom_logo && (
+                      <button onClick={() => setSavingsQuest(p => ({...p, custom_logo: null}))} className="ml-2 px-3 py-2 rounded-xl bg-red-500/10 text-red-500 text-sm">Remove</button>
+                    )}
+                  </div>
+                </div>
+              </div>
               <div>
                 <label className="text-sm text-gray-400 mb-2 block">Title</label>
                 <input value={savingsQuest.title} onChange={e => setSavingsQuest(p => ({...p, title: e.target.value}))} className="w-full px-4 py-3 bg-black/30 border border-white/10 rounded-xl text-white" />
