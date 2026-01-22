@@ -1,125 +1,118 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { Connection, PublicKey } from '@solana/web3.js';
 
-const HELIUS_API_KEY = process.env.HELIUS_API_KEY;
+const RPC_ENDPOINT = 'https://mainnet.helius-rpc.com/?api-key=fdeec242-8b73-41cd-b9e3-3ca680a2afc5';
+
+// Known program IDs
+const PROGRAM_IDS: Record<string, string> = {
+  jupiter: 'JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4',
+  meteora: 'LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo',
+  raydium: '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8',
+  orca: 'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc',
+};
 
 export async function POST(request: NextRequest) {
   try {
-    const { wallets, programId, action, minAmount } = await request.json();
+    const body = await request.json();
+    const { wallets, platform, actionType, minVolume } = body;
 
-    if (!wallets) {
-      return NextResponse.json({ error: 'Wallet addresses required' }, { status: 400 });
+    if (!wallets || !Array.isArray(wallets) || wallets.length === 0) {
+      return NextResponse.json(
+        { success: false, error: 'Wallets are required' },
+        { status: 400 }
+      );
     }
 
-    // Parse multiple wallets (comma separated)
-    const walletList = wallets.split(',').map((w: string) => w.trim()).filter((w: string) => w);
-
-    if (walletList.length === 0) {
-      return NextResponse.json({ error: 'At least one wallet address required' }, { status: 400 });
-    }
-
-    // Get today's start timestamp (UTC)
-    const today = new Date();
-    today.setUTCHours(0, 0, 0, 0);
-    const todayTimestamp = Math.floor(today.getTime() / 1000);
-
-    // Action type mapping
-    const actionTypes: Record<string, string[]> = {
-      'swap': ['SWAP'],
-      'add_lp': ['ADD_LIQUIDITY', 'DEPOSIT'],
-      'remove_lp': ['REMOVE_LIQUIDITY', 'WITHDRAW'],
-      'stake': ['STAKE'],
-      'any': []
-    };
-
-    const validTypes = actionTypes[action] || [];
-    let allTxDetails: any[] = [];
-    let totalTxCount = 0;
+    const connection = new Connection(RPC_ENDPOINT, 'confirmed');
+    const allTransactions = [];
+    let foundValidTx = false;
 
     // Check each wallet
-    for (const wallet of walletList) {
+    for (const walletAddress of wallets) {
       try {
-        const response = await fetch(
-          `https://api.helius.xyz/v0/addresses/${wallet}/transactions?api-key=${HELIUS_API_KEY}&limit=50`
-        );
-
-        if (!response.ok) continue;
-
-        const transactions = await response.json();
-
-        // Filter today's transactions that match criteria
-        const matchingTx = transactions.filter((tx: any) => {
-          // Check timestamp
-          if (tx.timestamp < todayTimestamp) return false;
-
-          // Check if transaction involves the target program
-          if (programId) {
-            const accountKeys = tx.accountData?.map((a: any) => a.account) || [];
-            const instructions = tx.instructions || [];
-            
-            // Check account keys
-            const hasProgram = accountKeys.includes(programId);
-            
-            // Check instruction program IDs
-            const hasProgramInstructions = instructions.some((inst: any) => 
-              inst.programId === programId
-            );
-
-            if (!hasProgram && !hasProgramInstructions) return false;
-          }
-
-          // Check action type if specified
-          if (validTypes.length > 0) {
-            const txType = tx.type || '';
-            const txDescription = tx.description || '';
-            
-            const matchesType = validTypes.some(t => 
-              txType.toUpperCase().includes(t) || 
-              txDescription.toUpperCase().includes(t)
-            );
-            
-            if (!matchesType) return false;
-          }
-
-          return true;
+        const pubkey = new PublicKey(walletAddress.trim());
+        
+        // Get recent signatures
+        const signatures = await connection.getSignaturesForAddress(pubkey, {
+          limit: 50,
         });
 
-        // Add matching transactions to results
-        matchingTx.forEach((tx: any) => {
-          totalTxCount++;
-          allTxDetails.push({
-            signature: tx.signature,
-            wallet: wallet,
-            type: tx.type || 'UNKNOWN',
-            description: tx.description || 'DeFi Transaction',
-            timestamp: tx.timestamp,
-            fee: tx.fee || 0
-          });
-        });
+        // Check each transaction
+        for (const sig of signatures) {
+          try {
+            const tx = await connection.getParsedTransaction(sig.signature, {
+              maxSupportedTransactionVersion: 0,
+            });
 
-      } catch (e) {
-        console.error(`Error fetching wallet ${wallet}:`, e);
+            if (!tx || !tx.meta || tx.meta.err) continue;
+
+            // Get all account keys from the transaction
+            const accountKeys = tx.transaction.message.accountKeys.map(
+              (key: any) => key.pubkey.toString()
+            );
+
+            // Check if transaction involves the target platform
+            let platformMatch = false;
+            
+            if (platform === 'custom') {
+              // For custom platform, just check if there's any valid transaction
+              platformMatch = true;
+            } else if (platform && PROGRAM_IDS[platform.toLowerCase()]) {
+              const targetProgramId = PROGRAM_IDS[platform.toLowerCase()];
+              platformMatch = accountKeys.includes(targetProgramId);
+            } else {
+              // If no specific platform, accept any DEX transaction
+              platformMatch = Object.values(PROGRAM_IDS).some(programId =>
+                accountKeys.includes(programId)
+              );
+            }
+
+            if (platformMatch) {
+              foundValidTx = true;
+              allTransactions.push({
+                signature: sig.signature,
+                blockTime: tx.blockTime,
+                slot: tx.slot,
+                wallet: walletAddress,
+                platform: platform || 'detected',
+              });
+            }
+          } catch (txError) {
+            console.error('Error processing transaction:', txError);
+            continue;
+          }
+        }
+      } catch (walletError) {
+        console.error(`Error checking wallet ${walletAddress}:`, walletError);
+        continue;
       }
     }
 
-    // Sort by timestamp descending
-    allTxDetails.sort((a, b) => b.timestamp - a.timestamp);
-
-    // Determine if quest is completed
-    const isCompleted = totalTxCount > 0;
-
-    return NextResponse.json({
-      success: true,
-      isCompleted,
-      txCount: totalTxCount,
-      walletsChecked: walletList.length,
-      transactions: allTxDetails.slice(0, 10), // Return max 10 transactions
-      checkedAt: new Date().toISOString()
-    });
-
+    if (foundValidTx) {
+      return NextResponse.json({
+        success: true,
+        verified: true,
+        transactions: allTransactions.slice(0, 10), // Return max 10 transactions
+        message: `Found ${allTransactions.length} valid transaction(s)`,
+      });
+    } else {
+      return NextResponse.json({
+        success: true,
+        verified: false,
+        transactions: [],
+        message: 'No valid transactions found',
+      });
+    }
   } catch (error: any) {
-    console.error('Error checking DeFi quest:', error);
-    return NextResponse.json({ 
-      error: error.message || 'Failed to check DeFi quest' 
-    }, { status: 500 });
+    console.error('DeFi check error:', error);
+    return NextResponse.json(
+      { 
+        success: false, 
+        verified: false,
+        error: error.message || 'Failed to verify transaction',
+        transactions: []
+      },
+      { status: 500 }
+    );
   }
 }
