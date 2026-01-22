@@ -6,7 +6,7 @@ import { useRouter } from 'next/navigation';
 import {
   Plus, TrendingUp, TrendingDown, Calendar, DollarSign, Trash2, X,
   ChevronLeft, ChevronRight, Loader2, Check, Flame, Target, Upload, 
-  Wallet, RefreshCw, ExternalLink, Shield, Zap, LogOut
+  Wallet, RefreshCw, ExternalLink, Shield, Zap, LogOut, Activity
 } from 'lucide-react';
 
 const questIcons: Record<string, { emoji: string; color: string }> = {
@@ -46,6 +46,12 @@ interface Quest {
   source_wallet: string | null;
   min_amount: number | null;
   token_type: 'SOL' | 'USDC' | 'BOTH' | null;
+  // DeFi Quest fields
+  is_defi_quest: boolean;
+  defi_platform: string | null;
+  defi_action: string | null;
+  defi_wallets: string | null;
+  defi_program_id: string | null;
 }
 
 interface QuestCompletion {
@@ -68,13 +74,36 @@ export default function DashboardPage() {
   const [calendarFilter, setCalendarFilter] = useState<'all' | 'quests' | 'income' | 'expense'>('all');
   const [showQuestModal, setShowQuestModal] = useState(false);
   const [showSavingsModal, setShowSavingsModal] = useState(false);
+  const [showDefiModal, setShowDefiModal] = useState(false);
   const [showTxModal, setShowTxModal] = useState(false);
   const [checkingWallet, setCheckingWallet] = useState<string | null>(null);
   const [walletResults, setWalletResults] = useState<Record<string, any>>({});
   const router = useRouter();
 
+  // DeFi Platforms with Program IDs
+  const defiPlatforms = [
+    { id: 'titan', name: 'Titan', programId: 'T1TANpTeScyeqVzzgNViGDNrkQ6qHz9KrSBS4aNXvGT', color: '#FF6B35' },
+    { id: 'jupiter', name: 'Jupiter', programId: 'JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4', color: '#00D18C' },
+    { id: 'meteora', name: 'Meteora', programId: 'LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo', color: '#E4FC82' },
+    { id: 'raydium', name: 'Raydium', programId: '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8', color: '#5AC4BE' },
+    { id: 'orca', name: 'Orca', programId: 'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc', color: '#FFD166' },
+    { id: 'custom', name: 'Custom', programId: '', color: '#8b5cf6' },
+  ];
+
+  const defiActions = [
+    { id: 'swap', name: 'Swap', types: ['SWAP'] },
+    { id: 'add_lp', name: 'Add Liquidity', types: ['ADD_LIQUIDITY', 'DEPOSIT'] },
+    { id: 'remove_lp', name: 'Remove Liquidity', types: ['REMOVE_LIQUIDITY', 'WITHDRAW'] },
+    { id: 'stake', name: 'Stake', types: ['STAKE'] },
+    { id: 'any', name: 'Any Action', types: [] },
+  ];
+
   const [newQuest, setNewQuest] = useState({ title: '', description: '', icon: 'custom', category: 'social', custom_logo: null as string | null });
   const [savingsQuest, setSavingsQuest] = useState({ title: 'Daily Savings', description: 'Transfer to savings', savings_wallet: '', source_wallet: '', min_amount: 0.01, token_type: 'SOL' as 'SOL' | 'USDC' | 'BOTH', custom_logo: null as string | null });
+  const [defiQuest, setDefiQuest] = useState({ 
+    title: '', description: '', custom_logo: null as string | null,
+    platform: 'titan', action: 'swap', wallets: '', min_amount: 0, custom_program_id: ''
+  });
   const [newTx, setNewTx] = useState({ date: new Date().toISOString().split('T')[0], amount: '', description: '', type: 'income', category: '' });
 
   const txCategories = {
@@ -143,6 +172,7 @@ export default function DashboardPage() {
   const toggleComplete = async (qid: string) => {
     const quest = quests.find(q => q.id === qid);
     if (quest?.is_savings_quest) { checkWallet(quest); return; }
+    if (quest?.is_defi_quest) { checkDefiQuest(quest); return; }
 
     const today = getTodayStr();
     const existing = completions.find(c => c.quest_id === qid && c.completed_date === today);
@@ -184,11 +214,40 @@ export default function DashboardPage() {
     setCheckingWallet(null);
   };
 
+  const checkDefiQuest = async (quest: Quest) => {
+    if (!quest.defi_wallets) return;
+    setCheckingWallet(quest.id);
+    try {
+      const res = await fetch('/api/check-defi', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          wallets: quest.defi_wallets,
+          programId: quest.defi_program_id,
+          action: quest.defi_action,
+          minAmount: quest.min_amount
+        })
+      });
+      const result = await res.json();
+      setWalletResults(p => ({ ...p, [quest.id]: result }));
+
+      if (result.isCompleted && !isCompletedToday(quest.id)) {
+        const { data } = await supabase.from('quest_completions').insert({
+          user_id: user.id, quest_id: quest.id, completed_date: getTodayStr(),
+          auto_verified: true, tx_signature: result.transactions?.[0]?.signature
+        }).select().single();
+        if (data) setCompletions([...completions, data]);
+      }
+    } catch (e) { console.error(e); }
+    setCheckingWallet(null);
+  };
+
   const addQuest = async () => {
     if (!newQuest.title) return;
     const { data } = await supabase.from('quests').insert({
       user_id: user.id, title: newQuest.title, description: newQuest.description,
-      icon: newQuest.icon, category: newQuest.category, custom_logo: newQuest.custom_logo, is_savings_quest: false
+      icon: newQuest.icon, category: newQuest.category, custom_logo: newQuest.custom_logo, 
+      is_savings_quest: false, is_defi_quest: false
     }).select().single();
     if (data) setQuests([...quests, data]);
     setNewQuest({ title: '', description: '', icon: 'custom', category: 'social', custom_logo: null });
@@ -199,7 +258,7 @@ export default function DashboardPage() {
     if (!savingsQuest.savings_wallet) return;
     const { data } = await supabase.from('quests').insert({
       user_id: user.id, title: savingsQuest.title, description: savingsQuest.description,
-      icon: 'savings', category: 'savings', is_savings_quest: true,
+      icon: 'savings', category: 'savings', is_savings_quest: true, is_defi_quest: false,
       savings_wallet: savingsQuest.savings_wallet, source_wallet: savingsQuest.source_wallet || null, 
       min_amount: savingsQuest.min_amount, token_type: savingsQuest.token_type,
       custom_logo: savingsQuest.custom_logo
@@ -207,6 +266,26 @@ export default function DashboardPage() {
     if (data) setQuests([...quests, data]);
     setSavingsQuest({ title: 'Daily Savings', description: 'Transfer to savings', savings_wallet: '', source_wallet: '', min_amount: 0.01, token_type: 'SOL', custom_logo: null });
     setShowSavingsModal(false);
+  };
+
+  const addDefiQuest = async () => {
+    if (!defiQuest.wallets || !defiQuest.title) return;
+    const platform = defiPlatforms.find(p => p.id === defiQuest.platform);
+    const programId = defiQuest.platform === 'custom' ? defiQuest.custom_program_id : platform?.programId;
+    
+    const { data } = await supabase.from('quests').insert({
+      user_id: user.id, title: defiQuest.title, description: defiQuest.description,
+      icon: 'crypto', category: 'defi', is_savings_quest: false, is_defi_quest: true,
+      custom_logo: defiQuest.custom_logo,
+      defi_platform: defiQuest.platform,
+      defi_action: defiQuest.action,
+      defi_wallets: defiQuest.wallets,
+      defi_program_id: programId,
+      min_amount: defiQuest.min_amount || null
+    }).select().single();
+    if (data) setQuests([...quests, data]);
+    setDefiQuest({ title: '', description: '', custom_logo: null, platform: 'titan', action: 'swap', wallets: '', min_amount: 0, custom_program_id: '' });
+    setShowDefiModal(false);
   };
 
   const deleteQuest = async (id: string) => {
@@ -278,10 +357,15 @@ export default function DashboardPage() {
           )}
           {activeTab === 'quests' && (
             <button onClick={() => setShowSavingsModal(true)} className="flex items-center gap-2 px-4 py-3 bg-gradient-to-r from-emerald-500 to-emerald-600 rounded-xl text-white text-sm font-semibold shadow-lg shadow-emerald-500/30">
-              <Wallet size={18} /> Savings Quest
+              <Wallet size={18} /> Savings
             </button>
           )}
-          <button onClick={() => activeTab === 'quests' ? setShowQuestModal(true) : setShowTxModal(true)} className="flex items-center gap-2 px-5 py-3 bg-gradient-to-r from-orange-500 to-orange-600 rounded-xl text-white text-sm font-semibold shadow-lg shadow-orange-500/30">
+          {activeTab === 'quests' && (
+            <button onClick={() => setShowDefiModal(true)} className="flex items-center gap-2 px-4 py-3 bg-gradient-to-r from-orange-500 to-amber-500 rounded-xl text-white text-sm font-semibold shadow-lg shadow-orange-500/30">
+              <Activity size={18} /> DeFi Quest
+            </button>
+          )}
+          <button onClick={() => activeTab === 'quests' ? setShowQuestModal(true) : setShowTxModal(true)} className="flex items-center gap-2 px-5 py-3 bg-gradient-to-r from-violet-500 to-violet-600 rounded-xl text-white text-sm font-semibold shadow-lg shadow-violet-500/30">
             <Plus size={18} /> {activeTab === 'quests' ? 'Add Quest' : 'Add Transaction'}
           </button>
           <button onClick={async () => { await supabase.auth.signOut(); router.push('/'); }} className="p-2.5 bg-red-500/10 rounded-xl text-red-400">
@@ -333,6 +417,7 @@ export default function DashboardPage() {
                         {getIcon(q, 52)}
                         {done && <div className="absolute -bottom-1 -right-1 w-5 h-5 rounded-full bg-emerald-500 flex items-center justify-center border-2 border-gray-900"><Check size={12} className="text-white" /></div>}
                         {q.is_savings_quest && !done && <div className="absolute -bottom-1 -right-1 w-5 h-5 rounded-full bg-blue-500 flex items-center justify-center border-2 border-gray-900"><Zap size={10} className="text-white" /></div>}
+                        {q.is_defi_quest && !done && <div className="absolute -bottom-1 -right-1 w-5 h-5 rounded-full bg-orange-500 flex items-center justify-center border-2 border-gray-900"><Activity size={10} className="text-white" /></div>}
                       </div>
                       <div>
                         <div className="flex items-center gap-2 mb-1">
@@ -345,7 +430,15 @@ export default function DashboardPage() {
                               {q.token_type === 'USDC' ? '$ USDC' : q.token_type === 'BOTH' ? '◎ + $' : '◎ SOL'}
                             </span>
                           )}
-                          {q.is_savings_quest && <span className="px-2 py-0.5 rounded bg-blue-500/20 text-blue-400 text-xs">Auto</span>}
+                          {q.is_defi_quest && q.defi_platform && (
+                            <span className="px-2 py-0.5 rounded text-xs" style={{
+                              background: `${defiPlatforms.find(p => p.id === q.defi_platform)?.color || '#8b5cf6'}22`,
+                              color: defiPlatforms.find(p => p.id === q.defi_platform)?.color || '#8b5cf6'
+                            }}>
+                              {defiPlatforms.find(p => p.id === q.defi_platform)?.name || q.defi_platform}
+                            </span>
+                          )}
+                          {(q.is_savings_quest || q.is_defi_quest) && <span className="px-2 py-0.5 rounded bg-blue-500/20 text-blue-400 text-xs">Auto</span>}
                           {streak >= 3 && <span className="px-2 py-0.5 rounded bg-amber-500/15 text-amber-500 text-xs flex items-center gap-1"><Flame size={12} />{streak}d</span>}
                         </div>
                         <p className="text-sm text-gray-500">{q.description}</p>
@@ -364,11 +457,17 @@ export default function DashboardPage() {
                             {result.transactions?.[0] && <a href={`https://solscan.io/tx/${result.transactions[0].signature}`} target="_blank" className="ml-3 text-blue-400">View TX <ExternalLink size={10} className="inline" /></a>}
                           </div>
                         )}
+                        {q.is_defi_quest && result && (
+                          <div className="mt-2 text-xs text-gray-500">
+                            Today: <span className={result.txCount > 0 ? 'text-emerald-400' : ''}>{result.txCount || 0} transactions</span>
+                            {result.transactions?.[0] && <a href={`https://solscan.io/tx/${result.transactions[0].signature}`} target="_blank" className="ml-3 text-blue-400">View TX <ExternalLink size={10} className="inline" /></a>}
+                          </div>
+                        )}
                       </div>
                     </div>
                     <div className="flex items-center gap-3">
-                      {q.is_savings_quest ? (
-                        <button onClick={() => checkWallet(q)} disabled={checking} className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium ${done ? 'bg-emerald-500 text-white' : 'bg-blue-500/20 text-blue-400'}`}>
+                      {(q.is_savings_quest || q.is_defi_quest) ? (
+                        <button onClick={() => q.is_defi_quest ? checkDefiQuest(q) : checkWallet(q)} disabled={checking} className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium ${done ? 'bg-emerald-500 text-white' : q.is_defi_quest ? 'bg-orange-500/20 text-orange-400' : 'bg-blue-500/20 text-blue-400'}`}>
                           {checking ? <Loader2 size={16} className="animate-spin" /> : done ? <Check size={16} /> : <RefreshCw size={16} />}
                           {checking ? '...' : done ? 'Verified' : 'Verify'}
                         </button>
@@ -743,6 +842,123 @@ export default function DashboardPage() {
                 <input type="date" value={newTx.date} onChange={e => setNewTx(p => ({...p, date: e.target.value}))} className="w-full px-4 py-3 bg-black/30 border border-white/10 rounded-xl text-white" />
               </div>
               <button onClick={addTransaction} className={`w-full py-4 rounded-xl text-white font-semibold ${newTx.type === 'income' ? 'bg-gradient-to-r from-emerald-500 to-emerald-600' : 'bg-gradient-to-r from-orange-500 to-orange-600'}`}>Save</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* DeFi Quest Modal */}
+      {showDefiModal && (
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50">
+          <div className="bg-gradient-to-br from-gray-800 to-gray-900 rounded-3xl p-8 w-full max-w-lg border border-white/10 max-h-[90vh] overflow-y-auto">
+            <div className="flex justify-between items-center mb-6">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-orange-500/20 flex items-center justify-center"><Activity size={20} className="text-orange-500" /></div>
+                <h3 className="text-xl font-semibold">DeFi Quest</h3>
+              </div>
+              <button onClick={() => setShowDefiModal(false)} className="w-9 h-9 rounded-xl bg-white/5 text-gray-400 flex items-center justify-center"><X size={20} /></button>
+            </div>
+            <div className="bg-orange-500/10 border border-orange-500/20 rounded-xl p-4 mb-6">
+              <div className="flex items-start gap-3">
+                <Zap size={20} className="text-orange-400" />
+                <div><p className="text-sm font-medium text-orange-400">On-chain Verification</p><p className="text-xs text-gray-400 mt-1">Automatically verifies your DeFi transactions</p></div>
+              </div>
+            </div>
+            <div className="space-y-5">
+              {/* Logo Upload */}
+              <div>
+                <label className="text-sm text-gray-400 mb-2 block">Quest Logo (optional)</label>
+                <div className="flex items-center gap-4">
+                  <div className="w-16 h-16 rounded-2xl bg-black/30 border-2 border-dashed border-white/15 flex items-center justify-center overflow-hidden">
+                    {defiQuest.custom_logo ? (
+                      <img src={defiQuest.custom_logo} className="w-full h-full object-cover" />
+                    ) : (
+                      <Activity size={24} className="text-gray-600" />
+                    )}
+                  </div>
+                  <div>
+                    <input 
+                      type="file" 
+                      accept="image/*" 
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        if (file) {
+                          const reader = new FileReader();
+                          reader.onloadend = () => setDefiQuest(p => ({...p, custom_logo: reader.result as string}));
+                          reader.readAsDataURL(file);
+                        }
+                      }} 
+                      className="hidden" 
+                      id="defi-logo" 
+                    />
+                    <label htmlFor="defi-logo" className="px-4 py-2 rounded-xl bg-indigo-500 text-white text-sm font-semibold cursor-pointer inline-flex items-center gap-2">
+                      <Upload size={16} />Upload
+                    </label>
+                    {defiQuest.custom_logo && (
+                      <button onClick={() => setDefiQuest(p => ({...p, custom_logo: null}))} className="ml-2 px-3 py-2 rounded-xl bg-red-500/10 text-red-500 text-sm">Remove</button>
+                    )}
+                  </div>
+                </div>
+              </div>
+              <div>
+                <label className="text-sm text-gray-400 mb-2 block">Title *</label>
+                <input value={defiQuest.title} onChange={e => setDefiQuest(p => ({...p, title: e.target.value}))} className="w-full px-4 py-3 bg-black/30 border border-white/10 rounded-xl text-white" placeholder="Daily Titan Swap" />
+              </div>
+              <div>
+                <label className="text-sm text-gray-400 mb-2 block">Description</label>
+                <input value={defiQuest.description} onChange={e => setDefiQuest(p => ({...p, description: e.target.value}))} className="w-full px-4 py-3 bg-black/30 border border-white/10 rounded-xl text-white" placeholder="Swap on Titan Exchange" />
+              </div>
+              <div>
+                <label className="text-sm text-gray-400 mb-2 block">Platform</label>
+                <div className="grid grid-cols-3 gap-2">
+                  {defiPlatforms.map(p => (
+                    <button 
+                      key={p.id} 
+                      onClick={() => setDefiQuest(prev => ({...prev, platform: p.id}))}
+                      className="py-3 rounded-xl font-semibold border-2 transition-all text-sm"
+                      style={defiQuest.platform === p.id 
+                        ? { borderColor: p.color, color: p.color, background: `${p.color}22` } 
+                        : { borderColor: 'rgba(255,255,255,0.1)', color: '#6b7280' }}
+                    >
+                      {p.name}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              {defiQuest.platform === 'custom' && (
+                <div>
+                  <label className="text-sm text-gray-400 mb-2 block">Custom Program ID *</label>
+                  <input value={defiQuest.custom_program_id} onChange={e => setDefiQuest(p => ({...p, custom_program_id: e.target.value}))} className="w-full px-4 py-3 bg-black/30 border border-white/10 rounded-xl text-white font-mono text-sm" placeholder="Program ID" />
+                </div>
+              )}
+              <div>
+                <label className="text-sm text-gray-400 mb-2 block">Action Type</label>
+                <div className="flex gap-2 flex-wrap">
+                  {defiActions.map(a => (
+                    <button 
+                      key={a.id} 
+                      onClick={() => setDefiQuest(prev => ({...prev, action: a.id}))}
+                      className={`px-4 py-2 rounded-xl text-sm font-medium border-2 transition-all ${defiQuest.action === a.id ? 'border-orange-500 bg-orange-500/20 text-orange-400' : 'border-white/10 text-gray-500'}`}
+                    >
+                      {a.name}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <label className="text-sm text-gray-400 mb-2 block">Wallet Addresses * <span className="text-gray-500">(comma separated for multiple)</span></label>
+                <textarea 
+                  value={defiQuest.wallets} 
+                  onChange={e => setDefiQuest(p => ({...p, wallets: e.target.value}))} 
+                  className="w-full px-4 py-3 bg-black/30 border border-white/10 rounded-xl text-white font-mono text-sm h-20 resize-none" 
+                  placeholder="wallet1, wallet2, wallet3..."
+                />
+              </div>
+              <div>
+                <label className="text-sm text-gray-400 mb-2 block">Min Volume (USD, optional)</label>
+                <input type="number" step="1" value={defiQuest.min_amount || ''} onChange={e => setDefiQuest(p => ({...p, min_amount: parseFloat(e.target.value) || 0}))} className="w-full px-4 py-3 bg-black/30 border border-white/10 rounded-xl text-white" placeholder="0" />
+              </div>
+              <button onClick={addDefiQuest} disabled={!defiQuest.wallets || !defiQuest.title} className="w-full py-4 bg-gradient-to-r from-orange-500 to-amber-500 rounded-xl text-white font-semibold disabled:opacity-50">Add DeFi Quest</button>
             </div>
           </div>
         </div>
