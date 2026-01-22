@@ -64,6 +64,7 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('quests');
   const [calendarMonth, setCalendarMonth] = useState(new Date());
+  const [calendarFilter, setCalendarFilter] = useState<'all' | 'quests' | 'income' | 'expense'>('all');
   const [showQuestModal, setShowQuestModal] = useState(false);
   const [showSavingsModal, setShowSavingsModal] = useState(false);
   const [showTxModal, setShowTxModal] = useState(false);
@@ -374,6 +375,24 @@ export default function DashboardPage() {
                 <button onClick={() => setCalendarMonth(new Date(calendarMonth.getFullYear(), calendarMonth.getMonth()+1))} className="w-9 h-9 rounded-lg bg-black/30 text-gray-400 flex items-center justify-center"><ChevronRight size={20} /></button>
               </div>
             </div>
+            {/* Filter Buttons */}
+            <div className="flex gap-1 bg-black/30 p-1 rounded-xl">
+              {[
+                { id: 'all', label: 'All', color: 'white' },
+                { id: 'quests', label: 'Quests', color: '#8b5cf6' },
+                { id: 'income', label: 'Income', color: '#10b981' },
+                { id: 'expense', label: 'Expense', color: '#ef4444' }
+              ].map(f => (
+                <button
+                  key={f.id}
+                  onClick={() => setCalendarFilter(f.id as any)}
+                  className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${calendarFilter === f.id ? 'bg-white/10' : ''}`}
+                  style={{ color: calendarFilter === f.id ? f.color : '#6b7280' }}
+                >
+                  {f.label}
+                </button>
+              ))}
+            </div>
           </div>
           <div className="grid grid-cols-7 gap-2 mb-3">
             {['MON','TUE','WED','THU','FRI','SAT','SUN'].map(d => <div key={d} className="text-center text-xs text-gray-500 py-3">{d}</div>)}
@@ -392,24 +411,81 @@ export default function DashboardPage() {
               const today = getTodayStr();
               return days.map((day, i) => {
                 const isToday = day.date === today;
-                const completed = day.date ? quests.filter(q => completions.some(c => c.quest_id === q.id && c.completed_date === day.date)) : [];
-                const rate = quests.length ? completed.length / quests.length : 0;
-                const dot = completed.length ? (rate === 1 ? 'bg-emerald-500' : rate >= 0.5 ? 'bg-amber-500' : 'bg-violet-500') : '';
+                
+                // Quests completed on this day
+                const completedQuests = day.date ? quests.filter(q => completions.some(c => c.quest_id === q.id && c.completed_date === day.date)) : [];
+                
+                // Transactions on this day
+                const dayIncome = day.date ? transactions.filter(t => t.date === day.date && t.type === 'income') : [];
+                const dayExpense = day.date ? transactions.filter(t => t.date === day.date && t.type === 'expense') : [];
+                const totalIncome = dayIncome.reduce((s, t) => s + t.amount, 0);
+                const totalExpense = dayExpense.reduce((s, t) => s + t.amount, 0);
+                
+                // Determine what to show based on filter
+                const showQuests = calendarFilter === 'all' || calendarFilter === 'quests';
+                const showIncome = calendarFilter === 'all' || calendarFilter === 'income';
+                const showExpense = calendarFilter === 'all' || calendarFilter === 'expense';
+                
+                // Dot color logic
+                let dot = '';
+                if (calendarFilter === 'all') {
+                  if (completedQuests.length && (dayIncome.length || dayExpense.length)) dot = 'bg-white';
+                  else if (completedQuests.length) dot = 'bg-violet-500';
+                  else if (dayIncome.length) dot = 'bg-emerald-500';
+                  else if (dayExpense.length) dot = 'bg-red-500';
+                } else if (calendarFilter === 'quests' && completedQuests.length) {
+                  const rate = quests.length ? completedQuests.length / quests.length : 0;
+                  dot = rate === 1 ? 'bg-emerald-500' : rate >= 0.5 ? 'bg-amber-500' : 'bg-violet-500';
+                } else if (calendarFilter === 'income' && dayIncome.length) {
+                  dot = 'bg-emerald-500';
+                } else if (calendarFilter === 'expense' && dayExpense.length) {
+                  dot = 'bg-red-500';
+                }
 
                 return (
-                  <div key={i} className={`aspect-square rounded-2xl p-3 flex flex-col relative ${isToday ? 'bg-orange-500/20 border-2 border-orange-500/60' : day.cur ? 'bg-black/25 border border-white/5' : 'bg-black/10 opacity-30'}`}>
+                  <div key={i} className={`aspect-square rounded-2xl p-2 flex flex-col relative ${isToday ? 'bg-orange-500/20 border-2 border-orange-500/60' : day.cur ? 'bg-black/25 border border-white/5' : 'bg-black/10 opacity-30'}`}>
                     {dot && <div className={`absolute top-2 right-2 w-2 h-2 rounded-full ${dot}`} />}
-                    <span className={`font-medium ${isToday ? 'text-orange-500' : ''}`}>{day.d}</span>
-                    {completed.length > 0 && (
-                      <div className="mt-auto flex flex-wrap gap-1 justify-center">
-                        {completed.slice(0,3).map(q => <div key={q.id} className="w-6 h-6">{getIcon(q, 24)}</div>)}
-                        {completed.length > 3 && <div className="w-6 h-6 rounded bg-white/10 flex items-center justify-center text-[10px] text-gray-400">+{completed.length-3}</div>}
-                      </div>
-                    )}
+                    <span className={`font-medium text-sm ${isToday ? 'text-orange-500' : ''}`}>{day.d}</span>
+                    
+                    <div className="mt-auto space-y-1">
+                      {/* Show quests */}
+                      {showQuests && completedQuests.length > 0 && (
+                        <div className="flex flex-wrap gap-0.5 justify-center">
+                          {completedQuests.slice(0, 3).map(q => <div key={q.id} className="w-5 h-5">{getIcon(q, 20)}</div>)}
+                          {completedQuests.length > 3 && <div className="w-5 h-5 rounded bg-white/10 flex items-center justify-center text-[8px] text-gray-400">+{completedQuests.length - 3}</div>}
+                        </div>
+                      )}
+                      
+                      {/* Show income */}
+                      {showIncome && totalIncome > 0 && (
+                        <div className="text-[10px] text-emerald-400 text-center font-medium truncate">
+                          +${totalIncome.toFixed(0)}
+                        </div>
+                      )}
+                      
+                      {/* Show expense */}
+                      {showExpense && totalExpense > 0 && (
+                        <div className="text-[10px] text-red-400 text-center font-medium truncate">
+                          -${totalExpense.toFixed(0)}
+                        </div>
+                      )}
+                    </div>
                   </div>
                 );
               });
             })()}
+          </div>
+          
+          {/* Legend */}
+          <div className="flex justify-between items-center mt-6 pt-5 border-t border-white/5">
+            <div className="flex gap-6">
+              <div className="flex items-center gap-2"><div className="w-2.5 h-2.5 rounded-full bg-violet-500" /><span className="text-xs text-gray-500">Quests</span></div>
+              <div className="flex items-center gap-2"><div className="w-2.5 h-2.5 rounded-full bg-emerald-500" /><span className="text-xs text-gray-500">Income</span></div>
+              <div className="flex items-center gap-2"><div className="w-2.5 h-2.5 rounded-full bg-red-500" /><span className="text-xs text-gray-500">Expense</span></div>
+            </div>
+            <div className="text-sm text-gray-400">
+              <span className="font-semibold text-white">{quests.length}</span> Quests • <span className="font-semibold text-emerald-500">{transactions.filter(t => t.type === 'income').length}</span> Income • <span className="font-semibold text-red-500">{transactions.filter(t => t.type === 'expense').length}</span> Expense
+            </div>
           </div>
         </div>
       )}
