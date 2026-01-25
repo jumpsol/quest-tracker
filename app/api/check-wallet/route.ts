@@ -1,131 +1,117 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 const HELIUS_API_KEY = process.env.HELIUS_API_KEY;
+const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
-  const wallets = searchParams.get('wallets') || searchParams.get('wallet');
-  const programId = searchParams.get('programId');
-  const action = searchParams.get('action') || 'any';
+  const wallet = searchParams.get('wallet') || searchParams.get('savingsWallet');
+  const sourceWallet = searchParams.get('sourceWallet') || null;
   const minAmount = parseFloat(searchParams.get('minAmount') || '0');
+  const tokenType = searchParams.get('tokenType') || 'SOL';
 
-  if (!wallets) {
-    return NextResponse.json({ error: 'wallets parameter required' }, { status: 400 });
+  if (!wallet) {
+    return NextResponse.json({ error: 'wallet parameter required' }, { status: 400 });
   }
 
-  return checkDefi(wallets, programId, action, minAmount);
+  return checkWallet(wallet, sourceWallet, minAmount, tokenType);
 }
 
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { wallets, programId, action = 'any', minAmount = 0 } = body;
+    const { savingsWallet, sourceWallet, minAmount = 0, tokenType = 'SOL' } = body;
 
-    if (!wallets) {
-      return NextResponse.json({ error: 'wallets required' }, { status: 400 });
+    if (!savingsWallet) {
+      return NextResponse.json({ error: 'savingsWallet required' }, { status: 400 });
     }
 
-    return checkDefi(wallets, programId, action, minAmount);
+    return checkWallet(savingsWallet, sourceWallet, minAmount, tokenType);
   } catch (error: any) {
     return NextResponse.json({ error: 'Invalid request body' }, { status: 400 });
   }
 }
 
-async function checkDefi(
-  walletsStr: string,
-  programId: string | null,
-  action: string,
-  minAmount: number
+async function checkWallet(
+  savingsWallet: string,
+  sourceWallet: string | null,
+  minAmount: number,
+  tokenType: string
 ) {
   try {
     if (!HELIUS_API_KEY) {
       return NextResponse.json({ error: 'API not configured' }, { status: 500 });
     }
 
-    const wallets = walletsStr.split(',').map(w => w.trim()).filter(Boolean);
-    
-    if (wallets.length === 0) {
-      return NextResponse.json({ error: 'No valid wallets' }, { status: 400 });
-    }
-
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     const todayTimestamp = Math.floor(today.getTime() / 1000);
 
-    let allTxDetails: any[] = [];
-    let totalVolume = 0;
+    const url = `https://api.helius.xyz/v0/addresses/${savingsWallet}/transactions?api-key=${HELIUS_API_KEY}&limit=100`;
+    const response = await fetch(url);
 
-    for (const wallet of wallets) {
-      try {
-        const url = `https://api.helius.xyz/v0/addresses/${wallet}/transactions?api-key=${HELIUS_API_KEY}&limit=100`;
-        const response = await fetch(url);
+    if (!response.ok) {
+      return NextResponse.json({ error: 'Failed to fetch transactions' }, { status: 502 });
+    }
 
-        if (!response.ok) continue;
+    const transactions = await response.json();
 
-        const transactions = await response.json();
-        if (!Array.isArray(transactions)) continue;
+    if (!Array.isArray(transactions)) {
+      return NextResponse.json({
+        success: true,
+        isCompleted: false,
+        todayStats: { transferCount: 0, totalSOL: '0.0000', totalUSDC: '0.00' },
+        transactions: []
+      });
+    }
 
-        for (const tx of transactions) {
-          if (tx.timestamp < todayTimestamp) continue;
+    let totalSOL = 0;
+    let totalUSDC = 0;
+    const txDetails: any[] = [];
 
-          let matchesProgram = true;
-          if (programId) {
-            const accounts = tx.accountData?.map((a: any) => a.account) || [];
-            matchesProgram = accounts.includes(programId) || 
-                            tx.instructions?.some((i: any) => i.programId === programId);
-          }
+    for (const tx of transactions) {
+      if (tx.timestamp < todayTimestamp) continue;
 
-          if (!matchesProgram) continue;
-
-          let matchesAction = true;
-          if (action && action !== 'any') {
-            const txType = (tx.type || '').toUpperCase();
-            if (action === 'swap') matchesAction = txType.includes('SWAP');
-            else if (action === 'add_lp') matchesAction = txType.includes('ADD') || txType.includes('DEPOSIT');
-            else if (action === 'remove_lp') matchesAction = txType.includes('REMOVE') || txType.includes('WITHDRAW');
-            else if (action === 'stake') matchesAction = txType.includes('STAKE');
-          }
-
-          if (!matchesAction) continue;
-
-          let txVolume = 0;
-          for (const t of tx.nativeTransfers || []) {
-            if (t.fromUserAccount === wallet || t.toUserAccount === wallet) {
-              txVolume += Math.abs(t.amount) / 1e9;
+      if (tokenType === 'SOL' || tokenType === 'BOTH') {
+        for (const transfer of tx.nativeTransfers || []) {
+          if (transfer.toUserAccount === savingsWallet) {
+            const isFromSource = sourceWallet ? transfer.fromUserAccount === sourceWallet : true;
+            if (isFromSource && transfer.amount > 0) {
+              const amount = transfer.amount / 1e9;
+              totalSOL += amount;
+              txDetails.push({ signature: tx.signature, type: 'SOL', amount, from: transfer.fromUserAccount, timestamp: tx.timestamp });
             }
           }
-
-          totalVolume += txVolume;
-          allTxDetails.push({
-            signature: tx.signature,
-            wallet,
-            type: tx.type || 'UNKNOWN',
-            timestamp: tx.timestamp
-          });
         }
-      } catch (err) {
-        console.error(`Error for ${wallet}:`, err);
+      }
+
+      if (tokenType === 'USDC' || tokenType === 'BOTH') {
+        for (const transfer of tx.tokenTransfers || []) {
+          if (transfer.toUserAccount === savingsWallet && transfer.mint === USDC_MINT) {
+            const isFromSource = sourceWallet ? transfer.fromUserAccount === sourceWallet : true;
+            if (isFromSource && transfer.tokenAmount > 0) {
+              totalUSDC += transfer.tokenAmount;
+              txDetails.push({ signature: tx.signature, type: 'USDC', amount: transfer.tokenAmount, from: transfer.fromUserAccount, timestamp: tx.timestamp });
+            }
+          }
+        }
       }
     }
 
-    const isCompleted = allTxDetails.length > 0 && (minAmount === 0 || totalVolume >= minAmount);
+    let isCompleted = false;
+    if (tokenType === 'SOL') isCompleted = totalSOL >= minAmount;
+    else if (tokenType === 'USDC') isCompleted = totalUSDC >= minAmount;
+    else if (tokenType === 'BOTH') isCompleted = totalSOL >= minAmount || totalUSDC >= minAmount;
 
     return NextResponse.json({
       success: true,
       isCompleted,
-      txCount: allTxDetails.length,
-      totalVolume: totalVolume.toFixed(4),
-      transactions: allTxDetails.slice(0, 10),
+      todayStats: { transferCount: txDetails.length, totalSOL: totalSOL.toFixed(4), totalUSDC: totalUSDC.toFixed(2) },
+      transactions: txDetails,
       checkedAt: new Date().toISOString()
     });
 
   } catch (error: any) {
-    return NextResponse.json({
-      success: false,
-      isCompleted: false,
-      error: error.message,
-      txCount: 0,
-      transactions: []
-    }, { status: 500 });
+    return NextResponse.json({ success: false, isCompleted: false, error: error.message, todayStats: { transferCount: 0, totalSOL: '0.0000', totalUSDC: '0.00' }, transactions: [] }, { status: 500 });
   }
 }
